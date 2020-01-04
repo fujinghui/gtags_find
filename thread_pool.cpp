@@ -6,6 +6,8 @@
 #include <utility>
 #include <mutex>
 #include <condition_variable>
+#include <future>
+#include <stdexcept>
 #include <assert.h>
 
 class ThreadPool {
@@ -21,8 +23,8 @@ class ThreadPool {
    void Start();
    void Stop();
    void WaitForCompletion();
-   void AddTask(const Task&);
-   void AddTask(const TaskPair&);
+   template<class F, class... Args>
+   auto AddTask(F&& f, Args&&... args) ->std::future<decltype(f(args...))>;
  private:
    ThreadPool(const ThreadPool&);
    const ThreadPool& operator=(const ThreadPool&);
@@ -106,17 +108,19 @@ ThreadPool::Task ThreadPool::take() {
   return task;
 }
 
-void ThreadPool::AddTask(const Task& task) {
+template<class F, class... Args>
+auto ThreadPool::AddTask(F&& f, Args&&... args) ->std::future<decltype(f(args...))> {
   std::unique_lock<std::mutex> lock(mutex_);
-  TaskPair task_pair(LEVEL2, task);
+  using RetType = decltype(f(args...));
+  // return a function type
+  auto task = std::make_shared<std::packaged_task<RetType()> >(std::bind(std::forward<F>(f), std::forward<Args>(args)...));
+  std::future<RetType> future = task->get_future();
+  TaskPair task_pair(LEVEL2, [task](){
+    (*task)();
+  });
   tasks_.push(task_pair);
   cond_.notify_one();
-}
-
-void ThreadPool::AddTask(const TaskPair& task_pair) {
-  std::unique_lock<std::mutex> lock(mutex_);
-  tasks_.push(task_pair);
-  cond_.notify_one();
+  return future;
 }
 
 void ThreadPool::ThreadLoop()
@@ -131,3 +135,24 @@ void ThreadPool::ThreadLoop()
   }
 }
 
+/*
+void print(int start, int end) {
+ for (int i = start; i < end; i ++) {
+   std::cout<<"i:"<<i<<std::endl;
+ }
+}
+
+int main(void) {
+  int loop = 1000000;
+  int task_count = 10;
+  int thread_pool_size = 2;
+  ThreadPool t(thread_pool_size);
+  t.Start();
+  for (int i = 0; i < task_count; i ++) {
+    t.AddTask(print, i * loop / task_count, (i + 1) * loop / task_count);
+  }
+  t.WaitForCompletion();
+  t.Stop();
+  return 0;
+}
+*/
